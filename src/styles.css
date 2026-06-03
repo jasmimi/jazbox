@@ -38,6 +38,7 @@ button:disabled {
 
 .app {
   min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   overflow: hidden;
   background:
@@ -75,6 +76,7 @@ button:disabled {
   top: -8rem;
   width: 18rem;
   height: 120vh;
+  height: 120dvh;
   background: linear-gradient(180deg, rgba(255, 244, 188, 0.28), rgba(255, 244, 188, 0));
   clip-path: polygon(42% 0, 58% 0, 100% 100%, 0 100%);
   opacity: 0.66;
@@ -98,6 +100,7 @@ button:disabled {
 
 .app-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   z-index: 1;
   width: min(1180px, calc(100% - 32px));
@@ -107,6 +110,7 @@ button:disabled {
 
 .home-screen {
   min-height: calc(100vh - 56px);
+  min-height: calc(100dvh - 56px);
   display: grid;
   align-content: center;
   gap: 28px;
@@ -304,6 +308,7 @@ textarea:focus {
 .phone-screen {
   display: grid;
   gap: 20px;
+  align-content: start;
 }
 
 .top-bar {
@@ -613,6 +618,7 @@ textarea:focus {
 .phone-screen {
   max-width: 560px;
   min-height: calc(100vh - 56px);
+  min-height: calc(100dvh - 56px);
   margin: 0 auto;
 }
 
