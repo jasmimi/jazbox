@@ -397,8 +397,7 @@ function HomeScreen({
   return (
     <section className="home-screen">
       <div className="brand-lockup">
-        <p className="eyebrow">Tonight's living room premiere</p>
-        <h1>Jazbox</h1>
+        <h1>JazBox</h1>
       </div>
 
       <div className="home-actions">
