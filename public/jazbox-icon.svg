@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">JazBox icon</title>
+  <desc id="desc">A bright game-show box with a speech bubble and spotlight beams.</desc>
+  <rect width="512" height="512" rx="88" fill="#15151f" />
+  <path d="M110 30h54l78 482h-93L93 62c-2-18 5-32 17-32Z" fill="#fff8df" opacity=".2" />
+  <path d="M388 30h-54l-78 482h93l56-450c2-18-5-32-17-32Z" fill="#fff8df" opacity=".16" />
+  <path d="M98 178c-9-50 25-78 79-63l228 65c40 11 59 40 51 77l-30 142c-8 39-38 58-78 46l-222-63c-38-11-59-38-53-77l25-127Z" fill="#15151f" />
+  <path d="M110 163c-7-37 17-57 57-45l228 65c30 9 44 30 38 58l-31 145c-6 29-28 43-58 34l-222-63c-28-8-44-28-39-57l27-137Z" fill="#f2545b" />
+  <path d="M140 182c-3-16 8-25 25-20l224 64c13 4 19 12 16 25l-24 111c-2 13-12 19-25 16l-222-63c-13-4-20-13-17-26l23-107Z" fill="#ffd54f" />
+  <path d="M156 202c-2-9 4-14 13-12l218 62-21 98-217-62 7-86Z" fill="#fff3d8" />
+  <path d="M197 146c20-26 60-36 102-23 51 16 79 57 63 92-15 33-67 45-114 27l-51 24 12-45c-23-20-28-49-12-75Z" fill="#15151f" />
+  <path d="M212 151c16-21 50-29 86-18 43 14 66 47 53 74-13 28-56 38-96 23l-37 18 9-34c-21-17-26-40-15-63Z" fill="#4fd1c5" />
+  <circle cx="255" cy="190" r="15" fill="#15151f" />
+  <circle cx="299" cy="190" r="15" fill="#15151f" />
+  <circle cx="343" cy="190" r="15" fill="#15151f" />
+  <circle cx="142" cy="393" r="18" fill="#4fd1c5" stroke="#15151f" stroke-width="12" />
+  <circle cx="245" cy="423" r="18" fill="#fffefa" stroke="#15151f" stroke-width="12" />
+  <circle cx="348" cy="392" r="18" fill="#ffd54f" stroke="#15151f" stroke-width="12" />
+</svg>
