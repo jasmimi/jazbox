@@ -1,4 +1,6 @@
-export type GamePhase = "lobby" | "answering" | "voting" | "results" | "final";
+export type GamePhase = "lobby" | "acting" | "discussion" | "accusing" | "reveal" | "final";
+
+export type ActionCategory = "pointing" | "numbers" | "hands" | "choice";
 
 export type Player = {
   id: string;
@@ -8,16 +10,19 @@ export type Player = {
   joinedAt: number;
 };
 
-export type Prompt = {
+export type ActionPrompt = {
   id: string;
+  category: ActionCategory;
   text: string;
+  fakerHint: string;
 };
 
-export type Matchup = {
+export type Round = {
   id: string;
   promptId: string;
+  fakerId: string;
   playerIds: string[];
-  answers: Record<string, string>;
+  readyPlayerIds: string[];
   votes: Record<string, string>;
   scored: boolean;
 };
@@ -26,9 +31,10 @@ export type RoomState = {
   roomCode: string;
   phase: GamePhase;
   players: Player[];
-  matchups: Matchup[];
-  currentMatchIndex: number;
+  rounds: Round[];
+  currentRoundIndex: number;
   round: number;
+  maxRounds: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -38,16 +44,15 @@ export type JoinRequestMessage = {
   name: string;
 };
 
-export type SubmitAnswerMessage = {
-  type: "submit_answer";
-  matchId: string;
-  answer: string;
+export type SubmitReadyMessage = {
+  type: "submit_ready";
+  roundId: string;
 };
 
 export type SubmitVoteMessage = {
   type: "submit_vote";
-  matchId: string;
-  answerPlayerId: string;
+  roundId: string;
+  suspectPlayerId: string;
 };
 
 export type PlayerClosedMessage = {
@@ -56,7 +61,7 @@ export type PlayerClosedMessage = {
 
 export type ClientToHostMessage =
   | JoinRequestMessage
-  | SubmitAnswerMessage
+  | SubmitReadyMessage
   | SubmitVoteMessage
   | PlayerClosedMessage;
 

@@ -1,28 +1,46 @@
-import type { Matchup, Player, Prompt, RoomState } from "./types";
+import type { ActionPrompt, Player, RoomState, Round } from "./types";
 
 const MAX_NAME_LENGTH = 18;
-const MAX_ANSWER_LENGTH = 90;
-const POINTS_PER_VOTE = 100;
+const GROUP_CATCH_POINTS = 500;
+const CORRECT_VOTE_POINTS = 250;
+const FAKER_ESCAPE_POINTS = 800;
+const FAKER_SPLIT_POINTS = 300;
+
+export const MIN_PLAYERS = 3;
+export const DEFAULT_ROUND_COUNT = 5;
 
 type RandomSource = () => number;
+
+export type RoundOutcome = {
+  voteTotals: Record<string, number>;
+  fakerVotes: number;
+  topVotes: number;
+  topPlayerIds: string[];
+  voterCount: number;
+  majorityThreshold: number;
+  hasMajority: boolean;
+  fakerCaught: boolean;
+  splitVote: boolean;
+};
 
 export function sanitizeName(value: string): string {
   const cleaned = value.replace(/\s+/g, " ").trim().slice(0, MAX_NAME_LENGTH);
   return cleaned.length > 0 ? cleaned : "Player";
 }
 
-export function sanitizeAnswer(value: string): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, MAX_ANSWER_LENGTH);
-}
-
-export function createRoomState(roomCode: string, now = Date.now()): RoomState {
+export function createRoomState(
+  roomCode: string,
+  now = Date.now(),
+  maxRounds = DEFAULT_ROUND_COUNT
+): RoomState {
   return {
     roomCode,
     phase: "lobby",
     players: [],
-    matchups: [],
-    currentMatchIndex: 0,
+    rounds: [],
+    currentRoundIndex: 0,
     round: 1,
+    maxRounds,
     createdAt: now,
     updatedAt: now
   };
@@ -62,14 +80,14 @@ export function markPlayerDisconnected(state: RoomState, playerId: string, now =
 
 export function startGame(
   state: RoomState,
-  prompts: Prompt[],
+  prompts: ActionPrompt[],
   random: RandomSource = Math.random,
   now = Date.now()
 ): RoomState {
   const activePlayers = state.players.filter((player) => player.connected);
 
-  if (activePlayers.length < 2) {
-    throw new Error("At least two connected players are required.");
+  if (activePlayers.length < MIN_PLAYERS) {
+    throw new Error(`At least ${MIN_PLAYERS} connected players are required.`);
   }
 
   if (prompts.length === 0) {
@@ -78,48 +96,67 @@ export function startGame(
 
   return {
     ...state,
-    phase: "answering",
+    phase: "acting",
     players: state.players.map((player) => ({ ...player, score: 0 })),
-    matchups: createMatchups(activePlayers, prompts, random),
-    currentMatchIndex: 0,
+    rounds: createRounds(activePlayers, prompts, state.maxRounds, random),
+    currentRoundIndex: 0,
+    round: 1,
     updatedAt: now
   };
 }
 
-export function submitAnswer(
+export function submitReady(
   state: RoomState,
   playerId: string,
-  matchId: string,
-  answer: string,
+  roundId: string,
   now = Date.now()
 ): RoomState {
-  const cleanAnswer = sanitizeAnswer(answer);
-  const matchup = state.matchups.find((item) => item.id === matchId);
+  const currentRound = getCurrentRound(state);
 
-  if (state.phase !== "answering" || !matchup || !matchup.playerIds.includes(playerId) || !cleanAnswer) {
+  if (
+    state.phase !== "acting" ||
+    !currentRound ||
+    currentRound.id !== roundId ||
+    !currentRound.playerIds.includes(playerId) ||
+    !isConnectedPlayer(state, playerId) ||
+    currentRound.readyPlayerIds.includes(playerId)
+  ) {
     return state;
   }
 
   return {
     ...state,
-    matchups: state.matchups.map((item) =>
-      item.id === matchId
-        ? { ...item, answers: { ...item.answers, [playerId]: cleanAnswer } }
-        : item
+    rounds: state.rounds.map((round) =>
+      round.id === roundId
+        ? { ...round, readyPlayerIds: [...round.readyPlayerIds, playerId] }
+        : round
     ),
     updatedAt: now
   };
 }
 
-export function openVoting(state: RoomState, now = Date.now()): RoomState {
-  if (state.phase !== "answering" || state.matchups.length === 0) {
+export function openDiscussion(state: RoomState, now = Date.now()): RoomState {
+  const progress = getReadyProgress(state);
+
+  if (state.phase !== "acting" || progress.required === 0 || progress.submitted < progress.required) {
     return state;
   }
 
   return {
     ...state,
-    phase: "voting",
-    currentMatchIndex: 0,
+    phase: "discussion",
+    updatedAt: now
+  };
+}
+
+export function openAccusation(state: RoomState, now = Date.now()): RoomState {
+  if (state.phase !== "discussion" || !getCurrentRound(state)) {
+    return state;
+  }
+
+  return {
+    ...state,
+    phase: "accusing",
     updatedAt: now
   };
 }
@@ -127,56 +164,55 @@ export function openVoting(state: RoomState, now = Date.now()): RoomState {
 export function submitVote(
   state: RoomState,
   voterId: string,
-  matchId: string,
-  answerPlayerId: string,
+  roundId: string,
+  suspectPlayerId: string,
   now = Date.now()
 ): RoomState {
-  const currentMatch = getCurrentMatchup(state);
-  const answerOptions = getSubmittedAnswers(currentMatch);
-  const canVote = answerOptions.some((option) => option.playerId !== voterId);
+  const currentRound = getCurrentRound(state);
+  const eligibleVoterIds = getEligibleVoterIds(state, currentRound);
 
   if (
-    state.phase !== "voting" ||
-    !currentMatch ||
-    currentMatch.id !== matchId ||
-    answerPlayerId === voterId ||
-    !canVote ||
-    !answerOptions.some((option) => option.playerId === answerPlayerId)
+    state.phase !== "accusing" ||
+    !currentRound ||
+    currentRound.id !== roundId ||
+    voterId === suspectPlayerId ||
+    !eligibleVoterIds.includes(voterId) ||
+    !currentRound.playerIds.includes(suspectPlayerId)
   ) {
     return state;
   }
 
   return {
     ...state,
-    matchups: state.matchups.map((item) =>
-      item.id === matchId ? { ...item, votes: { ...item.votes, [voterId]: answerPlayerId } } : item
+    rounds: state.rounds.map((round) =>
+      round.id === roundId ? { ...round, votes: { ...round.votes, [voterId]: suspectPlayerId } } : round
     ),
     updatedAt: now
   };
 }
 
 export function revealResults(state: RoomState, now = Date.now()): RoomState {
-  if (state.phase !== "voting") {
+  if (state.phase !== "accusing") {
     return state;
   }
 
-  const scored = scoreCurrentMatch(state);
+  const scored = scoreCurrentRound(state);
 
   return {
     ...scored,
-    phase: "results",
+    phase: "reveal",
     updatedAt: now
   };
 }
 
-export function advanceFromResults(state: RoomState, now = Date.now()): RoomState {
-  if (state.phase !== "results") {
+export function advanceFromReveal(state: RoomState, now = Date.now()): RoomState {
+  if (state.phase !== "reveal") {
     return state;
   }
 
-  const nextIndex = state.currentMatchIndex + 1;
+  const nextIndex = state.currentRoundIndex + 1;
 
-  if (nextIndex >= state.matchups.length) {
+  if (nextIndex >= state.rounds.length) {
     return {
       ...state,
       phase: "final",
@@ -186,8 +222,9 @@ export function advanceFromResults(state: RoomState, now = Date.now()): RoomStat
 
   return {
     ...state,
-    phase: "voting",
-    currentMatchIndex: nextIndex,
+    phase: "acting",
+    currentRoundIndex: nextIndex,
+    round: nextIndex + 1,
     updatedAt: now
   };
 }
@@ -196,70 +233,41 @@ export function returnToLobby(state: RoomState, now = Date.now()): RoomState {
   return {
     ...state,
     phase: "lobby",
-    matchups: [],
-    currentMatchIndex: 0,
-    round: state.round + 1,
+    rounds: [],
+    currentRoundIndex: 0,
+    round: 1,
     players: state.players.map((player) => ({ ...player, score: 0 })),
     updatedAt: now
   };
 }
 
-export function getCurrentMatchup(state: RoomState): Matchup | undefined {
-  return state.matchups[state.currentMatchIndex];
+export function getCurrentRound(state: RoomState): Round | undefined {
+  return state.rounds[state.currentRoundIndex];
 }
 
-export function getPlayerMatchup(state: RoomState, playerId: string): Matchup | undefined {
-  return state.matchups.find((matchup) => matchup.playerIds.includes(playerId));
-}
-
-export function getSubmittedAnswers(matchup: Matchup | undefined): Array<{ playerId: string; answer: string }> {
-  if (!matchup) {
-    return [];
-  }
-
-  return matchup.playerIds
-    .map((playerId) => ({ playerId, answer: matchup.answers[playerId] }))
-    .filter((item): item is { playerId: string; answer: string } => Boolean(item.answer));
-}
-
-export function getAnswerProgress(state: RoomState): { submitted: number; required: number } {
-  const connectedPlayerIds = new Set(state.players.filter((player) => player.connected).map((player) => player.id));
-  const requiredPlayerIds = new Set<string>();
-  const submittedPlayerIds = new Set<string>();
-
-  state.matchups.forEach((matchup) => {
-    matchup.playerIds.forEach((playerId) => {
-      if (connectedPlayerIds.has(playerId)) {
-        requiredPlayerIds.add(playerId);
-      }
-
-      if (matchup.answers[playerId]) {
-        submittedPlayerIds.add(playerId);
-      }
-    });
-  });
+export function getReadyProgress(
+  state: RoomState,
+  round: Round | undefined = getCurrentRound(state)
+): { submitted: number; required: number } {
+  const requiredPlayerIds = getConnectedRoundPlayerIds(state, round);
+  const submitted = requiredPlayerIds.filter((playerId) => Boolean(round?.readyPlayerIds.includes(playerId))).length;
 
   return {
-    submitted: [...submittedPlayerIds].filter((playerId) => requiredPlayerIds.has(playerId)).length,
-    required: requiredPlayerIds.size
+    submitted,
+    required: requiredPlayerIds.length
   };
 }
 
-export function getEligibleVoterIds(state: RoomState, matchup: Matchup | undefined): string[] {
-  const answerOptions = getSubmittedAnswers(matchup);
-
-  return state.players
-    .filter((player) => player.connected)
-    .filter((player) => answerOptions.some((option) => option.playerId !== player.id))
-    .map((player) => player.id);
+export function getEligibleVoterIds(state: RoomState, round: Round | undefined = getCurrentRound(state)): string[] {
+  return getConnectedRoundPlayerIds(state, round);
 }
 
 export function getVoteProgress(
   state: RoomState,
-  matchup: Matchup | undefined = getCurrentMatchup(state)
+  round: Round | undefined = getCurrentRound(state)
 ): { submitted: number; required: number } {
-  const eligibleVoterIds = getEligibleVoterIds(state, matchup);
-  const submitted = eligibleVoterIds.filter((playerId) => Boolean(matchup?.votes[playerId])).length;
+  const eligibleVoterIds = getEligibleVoterIds(state, round);
+  const submitted = eligibleVoterIds.filter((playerId) => Boolean(round?.votes[playerId])).length;
 
   return {
     submitted,
@@ -267,76 +275,137 @@ export function getVoteProgress(
   };
 }
 
-export function getVoteTotals(matchup: Matchup | undefined): Record<string, number> {
+export function getVoteTotals(round: Round | undefined): Record<string, number> {
   const totals: Record<string, number> = {};
 
-  if (!matchup) {
+  if (!round) {
     return totals;
   }
 
-  matchup.playerIds.forEach((playerId) => {
+  round.playerIds.forEach((playerId) => {
     totals[playerId] = 0;
   });
 
-  Object.values(matchup.votes).forEach((playerId) => {
+  Object.values(round.votes).forEach((playerId) => {
     totals[playerId] = (totals[playerId] ?? 0) + 1;
   });
 
   return totals;
 }
 
+export function getRoundOutcome(round: Round | undefined): RoundOutcome {
+  const voteTotals = getVoteTotals(round);
+  const voterCount = round ? Object.keys(round.votes).length : 0;
+  const topVotes = Math.max(0, ...Object.values(voteTotals));
+  const topPlayerIds = Object.entries(voteTotals)
+    .filter(([, total]) => total === topVotes && total > 0)
+    .map(([playerId]) => playerId);
+  const majorityThreshold = Math.floor(voterCount / 2) + 1;
+  const fakerVotes = round ? voteTotals[round.fakerId] ?? 0 : 0;
+  const hasMajority = topVotes >= majorityThreshold;
+  const fakerCaught = Boolean(round && fakerVotes > 0 && fakerVotes === topVotes && topPlayerIds.length === 1);
+
+  return {
+    voteTotals,
+    fakerVotes,
+    topVotes,
+    topPlayerIds,
+    voterCount,
+    majorityThreshold,
+    hasMajority,
+    fakerCaught,
+    splitVote: !hasMajority || topPlayerIds.length > 1
+  };
+}
+
 export function getPlayerName(state: RoomState, playerId: string): string {
   return state.players.find((player) => player.id === playerId)?.name ?? "Player";
 }
 
-function createMatchups(players: Player[], prompts: Prompt[], random: RandomSource): Matchup[] {
+function createRounds(
+  players: Player[],
+  prompts: ActionPrompt[],
+  roundCount: number,
+  random: RandomSource
+): Round[] {
   const shuffledPlayers = shuffle(players, random);
   const shuffledPrompts = shuffle(prompts, random);
-  const groups: Player[][] = [];
+  const playerIds = players.map((player) => player.id);
 
-  for (let index = 0; index < shuffledPlayers.length; index += 2) {
-    groups.push(shuffledPlayers.slice(index, index + 2));
-  }
-
-  const lastGroup = groups[groups.length - 1];
-  if (lastGroup.length === 1 && groups.length > 1) {
-    groups[groups.length - 2] = [...groups[groups.length - 2], lastGroup[0]];
-    groups.pop();
-  }
-
-  return groups.map((group, index) => {
+  return Array.from({ length: Math.max(1, roundCount) }, (_, index) => {
     const prompt = shuffledPrompts[index % shuffledPrompts.length];
+    const faker = shuffledPlayers[index % shuffledPlayers.length];
 
     return {
-      id: `match-${index + 1}-${prompt.id}`,
+      id: `round-${index + 1}-${prompt.id}`,
       promptId: prompt.id,
-      playerIds: group.map((player) => player.id),
-      answers: {},
+      fakerId: faker.id,
+      playerIds,
+      readyPlayerIds: [],
       votes: {},
       scored: false
     };
   });
 }
 
-function scoreCurrentMatch(state: RoomState): RoomState {
-  const currentMatch = getCurrentMatchup(state);
+function scoreCurrentRound(state: RoomState): RoomState {
+  const currentRound = getCurrentRound(state);
 
-  if (!currentMatch || currentMatch.scored) {
+  if (!currentRound || currentRound.scored) {
     return state;
   }
 
-  const voteTotals = getVoteTotals(currentMatch);
+  const outcome = getRoundOutcome(currentRound);
 
   return {
     ...state,
-    players: state.players.map((player) => ({
-      ...player,
-      score: player.score + (voteTotals[player.id] ?? 0) * POINTS_PER_VOTE
-    })),
-    matchups: state.matchups.map((matchup) =>
-      matchup.id === currentMatch.id ? { ...matchup, scored: true } : matchup
+    players: state.players.map((player) => {
+      if (!currentRound.playerIds.includes(player.id)) {
+        return player;
+      }
+
+      const votedForFaker = currentRound.votes[player.id] === currentRound.fakerId;
+      const isFaker = player.id === currentRound.fakerId;
+      let score = player.score;
+
+      if (isFaker) {
+        if (!outcome.fakerCaught) {
+          score += FAKER_ESCAPE_POINTS;
+        }
+
+        if (!outcome.fakerCaught && outcome.splitVote) {
+          score += FAKER_SPLIT_POINTS;
+        }
+      } else {
+        if (outcome.fakerCaught) {
+          score += GROUP_CATCH_POINTS;
+        }
+
+        if (votedForFaker) {
+          score += CORRECT_VOTE_POINTS;
+        }
+      }
+
+      return { ...player, score };
+    }),
+    rounds: state.rounds.map((round) =>
+      round.id === currentRound.id ? { ...round, scored: true } : round
     )
   };
+}
+
+function getConnectedRoundPlayerIds(state: RoomState, round: Round | undefined): string[] {
+  if (!round) {
+    return [];
+  }
+
+  const connectedPlayerIds = new Set(state.players.filter((player) => player.connected).map((player) => player.id));
+
+  return round.playerIds.filter((playerId) => connectedPlayerIds.has(playerId));
+}
+
+function isConnectedPlayer(state: RoomState, playerId: string): boolean {
+  return state.players.some((player) => player.id === playerId && player.connected);
 }
 
 function shuffle<T>(items: T[], random: RandomSource): T[] {
