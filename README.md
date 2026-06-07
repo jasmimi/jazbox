@@ -1,6 +1,6 @@
 # Jazbox
 
-A static, Jackbox-style party game app. The first game is a Quiplash-like round where a host creates a room, players join with a room code, answer prompts, vote, and see a final scoreboard.
+A static, Jackbox-style party game app. The current game is a Fakin' It-inspired hidden-faker round where a host creates a room, players join with phones, perform physical prompts, accuse the faker, and see a final scoreboard.
 
 ## Local Development
 
@@ -28,3 +28,5 @@ The Vite production base path is `/jazbox/`, which matches a project page hosted
 ## Realtime Rooms
 
 Rooms use PeerJS Cloud for WebRTC signaling. The host browser owns the room state; if the host closes or refreshes, that room ends.
+
+Devices do not need to be on the same local network. They do need internet access, and restrictive firewalls or public networks may block WebRTC connections.

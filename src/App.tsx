@@ -1,29 +1,30 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import Peer, { DataConnection } from "peerjs";
 import {
+  MIN_PLAYERS,
   addPlayer,
-  advanceFromResults,
+  advanceFromReveal,
   createRoomState,
-  getAnswerProgress,
-  getCurrentMatchup,
+  getCurrentRound,
   getEligibleVoterIds,
-  getPlayerMatchup,
   getPlayerName,
-  getSubmittedAnswers,
+  getReadyProgress,
+  getRoundOutcome,
   getVoteProgress,
   getVoteTotals,
   markPlayerDisconnected,
-  openVoting,
+  openAccusation,
+  openDiscussion,
   returnToLobby,
   revealResults,
   sanitizeName,
   startGame,
-  submitAnswer,
+  submitReady,
   submitVote
 } from "./game";
-import { normalizeRoomCode, generateRoomCode, roomCodeToPeerId } from "./peer";
+import { generateRoomCode, normalizeRoomCode, roomCodeToPeerId } from "./peer";
 import { PROMPTS } from "./prompts";
-import type { ClientToHostMessage, HostToClientMessage, Matchup, RoomState } from "./types";
+import type { ActionPrompt, ClientToHostMessage, HostToClientMessage, RoomState, Round } from "./types";
 
 type AppMode = "home" | "host" | "player";
 type ConnectionState = "idle" | "connecting" | "ready" | "error" | "closed";
@@ -43,7 +44,6 @@ function App() {
   const [joinName, setJoinName] = useState("");
   const [joinCode, setJoinCode] = useState(initialRoomCode);
   const [playerId, setPlayerId] = useState("");
-  const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState(false);
 
   const roomRef = useRef<RoomState | null>(null);
@@ -127,12 +127,12 @@ function App() {
         return;
       }
 
-      if (message.type === "submit_answer") {
-        commitHostState(submitAnswer(currentState, connection.peer, message.matchId, message.answer));
+      if (message.type === "submit_ready") {
+        commitHostState(submitReady(currentState, connection.peer, message.roundId));
       }
 
       if (message.type === "submit_vote") {
-        commitHostState(submitVote(currentState, connection.peer, message.matchId, message.answerPlayerId));
+        commitHostState(submitVote(currentState, connection.peer, message.roundId, message.suspectPlayerId));
       }
 
       if (message.type === "player_disconnect") {
@@ -282,9 +282,15 @@ function App() {
     }
   };
 
-  const hostOpenVoting = () => {
+  const hostOpenDiscussion = () => {
     if (roomRef.current) {
-      commitHostState(openVoting(roomRef.current));
+      commitHostState(openDiscussion(roomRef.current));
+    }
+  };
+
+  const hostOpenAccusation = () => {
+    if (roomRef.current) {
+      commitHostState(openAccusation(roomRef.current));
     }
   };
 
@@ -296,7 +302,7 @@ function App() {
 
   const hostAdvance = () => {
     if (roomRef.current) {
-      commitHostState(advanceFromResults(roomRef.current));
+      commitHostState(advanceFromReveal(roomRef.current));
     }
   };
 
@@ -352,7 +358,8 @@ function App() {
             onAdvance={hostAdvance}
             onCopyLink={copyJoinLink}
             onGoHome={goHome}
-            onOpenVoting={hostOpenVoting}
+            onOpenAccusation={hostOpenAccusation}
+            onOpenDiscussion={hostOpenDiscussion}
             onReturnToLobby={hostReturnToLobby}
             onRevealResults={hostRevealResults}
             onStartGame={hostStartGame}
@@ -361,13 +368,11 @@ function App() {
 
         {mode === "player" && (
           <PlayerScreen
-            answerDrafts={answerDrafts}
             connectionState={connectionState}
             hostStatus={hostStatus}
             playerId={playerId}
             promptById={promptById}
             roomState={roomState}
-            onAnswerDraftChange={setAnswerDrafts}
             onGoHome={goHome}
             onSend={sendPlayerMessage}
           />
@@ -404,7 +409,7 @@ function HomeScreen({
         <div className="show-panel host-panel">
           <div>
             <p className="panel-kicker">Big screen</p>
-            <h2>Host a room</h2>
+            <h2>Find the faker</h2>
           </div>
           <button className="button button-primary" type="button" onClick={onCreateRoom}>
             Create Room
@@ -458,12 +463,13 @@ type HostScreenProps = {
   copied: boolean;
   connectionState: ConnectionState;
   hostStatus: string;
-  promptById: Map<string, { text: string }>;
+  promptById: Map<string, ActionPrompt>;
   roomState: RoomState | null;
   onAdvance: () => void;
   onCopyLink: () => void;
   onGoHome: () => void;
-  onOpenVoting: () => void;
+  onOpenAccusation: () => void;
+  onOpenDiscussion: () => void;
   onReturnToLobby: () => void;
   onRevealResults: () => void;
   onStartGame: () => void;
@@ -478,7 +484,8 @@ function HostScreen({
   onAdvance,
   onCopyLink,
   onGoHome,
-  onOpenVoting,
+  onOpenAccusation,
+  onOpenDiscussion,
   onReturnToLobby,
   onRevealResults,
   onStartGame
@@ -495,8 +502,8 @@ function HostScreen({
     );
   }
 
-  const currentMatchup = getCurrentMatchup(roomState);
-  const currentPrompt = currentMatchup ? promptById.get(currentMatchup.promptId)?.text : "";
+  const currentRound = getCurrentRound(roomState);
+  const currentPrompt = currentRound ? promptById.get(currentRound.promptId) : undefined;
   const connectedPlayers = roomState.players.filter((player) => player.connected);
 
   return (
@@ -517,28 +524,32 @@ function HostScreen({
         <LobbyHost players={roomState.players} onStartGame={onStartGame} />
       )}
 
-      {roomState.phase === "answering" && (
-        <AnsweringHost
-          promptById={promptById}
+      {roomState.phase === "acting" && currentRound && (
+        <ActingHost roomState={roomState} onOpenDiscussion={onOpenDiscussion} />
+      )}
+
+      {roomState.phase === "discussion" && currentRound && currentPrompt && (
+        <DiscussionHost
+          prompt={currentPrompt}
           roomState={roomState}
-          onOpenVoting={onOpenVoting}
+          onOpenAccusation={onOpenAccusation}
         />
       )}
 
-      {roomState.phase === "voting" && currentMatchup && (
-        <VotingHost
-          currentMatchup={currentMatchup}
-          prompt={currentPrompt ?? ""}
+      {roomState.phase === "accusing" && currentRound && currentPrompt && (
+        <AccusingHost
+          prompt={currentPrompt}
           roomState={roomState}
+          round={currentRound}
           onRevealResults={onRevealResults}
         />
       )}
 
-      {roomState.phase === "results" && currentMatchup && (
-        <ResultsHost
-          currentMatchup={currentMatchup}
-          prompt={currentPrompt ?? ""}
+      {roomState.phase === "reveal" && currentRound && currentPrompt && (
+        <RevealHost
+          prompt={currentPrompt}
           roomState={roomState}
+          round={currentRound}
           onAdvance={onAdvance}
         />
       )}
@@ -574,129 +585,163 @@ function TopBar({
 
 function LobbyHost({ players, onStartGame }: { players: RoomState["players"]; onStartGame: () => void }) {
   const connectedPlayers = players.filter((player) => player.connected);
-  const canStart = connectedPlayers.length >= 2;
+  const canStart = connectedPlayers.length >= MIN_PLAYERS;
 
   return (
     <div className="phase-grid">
       <section className="show-panel wide-panel">
         <p className="panel-kicker">Lobby</p>
-        <h2>{connectedPlayers.length} players in the cast</h2>
+        <h2>{connectedPlayers.length} players in the room</h2>
         <PlayerCloud players={players} />
       </section>
       <aside className="host-controls">
         <button className="button button-primary" disabled={!canStart} type="button" onClick={onStartGame}>
           Start Show
         </button>
-        <p className="control-note">{canStart ? "Round one is ready." : "Need two players."}</p>
+        <p className="control-note">{canStart ? "Round one is ready." : `Need ${MIN_PLAYERS} players.`}</p>
       </aside>
     </div>
   );
 }
 
-function AnsweringHost({
-  promptById,
+function ActingHost({
   roomState,
-  onOpenVoting
+  onOpenDiscussion
 }: {
-  promptById: Map<string, { text: string }>;
   roomState: RoomState;
-  onOpenVoting: () => void;
+  onOpenDiscussion: () => void;
 }) {
-  const progress = getAnswerProgress(roomState);
+  const progress = getReadyProgress(roomState);
   const complete = progress.required > 0 && progress.submitted >= progress.required;
 
   return (
     <div className="phase-grid">
       <section className="show-panel wide-panel">
-        <p className="panel-kicker">Round {roomState.round}</p>
-        <h2>Writing room</h2>
+        <p className="panel-kicker">Round {roomState.round}/{roomState.maxRounds}</p>
+        <h2>Phones have the prompt</h2>
         <div className="progress-track">
           <span style={{ width: `${progress.required ? (progress.submitted / progress.required) * 100 : 0}%` }} />
         </div>
         <p className="big-count">
           {progress.submitted}/{progress.required}
         </p>
-        <div className="match-list">
-          {roomState.matchups.map((matchup) => (
-            <div className="match-row" key={matchup.id}>
-              <strong>{promptById.get(matchup.promptId)?.text}</strong>
-              <span>{matchup.playerIds.map((playerId) => getPlayerName(roomState, playerId)).join(" vs ")}</span>
-            </div>
-          ))}
+        <div className="round-steps">
+          <span>Act</span>
+          <span>Discuss</span>
+          <span>Accuse</span>
+          <span>Reveal</span>
         </div>
       </section>
       <aside className="host-controls">
-        <button className="button button-primary" disabled={!complete} type="button" onClick={onOpenVoting}>
-          Open Voting
+        <button className="button button-primary" disabled={!complete} type="button" onClick={onOpenDiscussion}>
+          Open Discussion
         </button>
-        <p className="control-note">{complete ? "All answers are in." : "Phones are still typing."}</p>
+        <p className="control-note">{complete ? "Everyone is locked." : "Waiting on phones."}</p>
       </aside>
     </div>
   );
 }
 
-function VotingHost({
-  currentMatchup,
+function DiscussionHost({
   prompt,
   roomState,
-  onRevealResults
+  onOpenAccusation
 }: {
-  currentMatchup: Matchup;
-  prompt: string;
+  prompt: ActionPrompt;
   roomState: RoomState;
-  onRevealResults: () => void;
+  onOpenAccusation: () => void;
 }) {
-  const answers = getSubmittedAnswers(currentMatchup);
-  const voteProgress = getVoteProgress(roomState, currentMatchup);
-  const complete = voteProgress.submitted >= voteProgress.required;
-
   return (
     <div className="phase-stack">
-      <PromptBoard eyebrow={`Match ${roomState.currentMatchIndex + 1}/${roomState.matchups.length}`} prompt={prompt} />
-      <AnswerShowdown answers={answers} roomState={roomState} />
+      <PromptBoard
+        eyebrow={`Round ${roomState.round}/${roomState.maxRounds} - ${categoryLabel(prompt.category)}`}
+        prompt={prompt.text}
+      />
       <div className="host-ribbon">
-        <span>
-          Votes {voteProgress.submitted}/{voteProgress.required}
-        </span>
-        <button className="button button-primary" disabled={!complete} type="button" onClick={onRevealResults}>
-          Reveal Results
+        <span>Make the case.</span>
+        <button className="button button-primary" type="button" onClick={onOpenAccusation}>
+          Accuse
         </button>
       </div>
     </div>
   );
 }
 
-function ResultsHost({
-  currentMatchup,
+function AccusingHost({
   prompt,
   roomState,
-  onAdvance
+  round,
+  onRevealResults
 }: {
-  currentMatchup: Matchup;
-  prompt: string;
+  prompt: ActionPrompt;
   roomState: RoomState;
-  onAdvance: () => void;
+  round: Round;
+  onRevealResults: () => void;
 }) {
-  const answers = getSubmittedAnswers(currentMatchup);
-  const voteTotals = getVoteTotals(currentMatchup);
-  const lastMatch = roomState.currentMatchIndex >= roomState.matchups.length - 1;
+  const voteProgress = getVoteProgress(roomState, round);
+  const complete = voteProgress.required > 0 && voteProgress.submitted >= voteProgress.required;
 
   return (
     <div className="phase-stack">
-      <PromptBoard eyebrow="Results" prompt={prompt} />
-      <div className="answer-grid">
-        {answers.map((answer) => (
-          <article className="answer-card result-card" key={answer.playerId}>
-            <p>{answer.answer}</p>
-            <strong>{getPlayerName(roomState, answer.playerId)}</strong>
-            <span>{voteTotals[answer.playerId] ?? 0} votes</span>
-          </article>
-        ))}
-      </div>
+      <PromptBoard
+        eyebrow={`Round ${roomState.round}/${roomState.maxRounds} - accusations`}
+        prompt={prompt.text}
+      />
+      <section className="show-panel">
+        <p className="panel-kicker">Votes</p>
+        <h2>
+          {voteProgress.submitted}/{voteProgress.required}
+        </h2>
+        <PlayerCloud players={roomState.players.filter((player) => round.playerIds.includes(player.id))} compact />
+      </section>
       <div className="host-ribbon">
-        <span>{lastMatch ? "Final scores are cued." : "Next bit is waiting."}</span>
+        <span>{complete ? "Votes are locked." : "Phones are choosing."}</span>
+        <button className="button button-primary" disabled={!complete} type="button" onClick={onRevealResults}>
+          Reveal Faker
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function RevealHost({
+  prompt,
+  roomState,
+  round,
+  onAdvance
+}: {
+  prompt: ActionPrompt;
+  roomState: RoomState;
+  round: Round;
+  onAdvance: () => void;
+}) {
+  const outcome = getRoundOutcome(round);
+  const voteTotals = getVoteTotals(round);
+  const lastRound = roomState.currentRoundIndex >= roomState.rounds.length - 1;
+
+  return (
+    <div className="phase-stack">
+      <PromptBoard
+        eyebrow={outcome.fakerCaught ? "Caught" : "Escaped"}
+        prompt={`${getPlayerName(roomState, round.fakerId)} was the faker`}
+      />
+      <section className="show-panel reveal-panel">
+        <p className="panel-kicker">{categoryLabel(prompt.category)}</p>
+        <h2>{prompt.text}</h2>
+        <div className="vote-grid">
+          {round.playerIds.map((suspectId) => (
+            <article className={`vote-card ${suspectId === round.fakerId ? "faker-card" : ""}`} key={suspectId}>
+              <span>{getPlayerName(roomState, suspectId)}</span>
+              <strong>{voteTotals[suspectId] ?? 0}</strong>
+              {suspectId === round.fakerId && <em>Faker</em>}
+            </article>
+          ))}
+        </div>
+      </section>
+      <div className="host-ribbon">
+        <span>{outcome.splitVote && !outcome.fakerCaught ? "Split vote bonus." : "Scores updated."}</span>
         <button className="button button-primary" type="button" onClick={onAdvance}>
-          {lastMatch ? "Finale" : "Next Match"}
+          {lastRound ? "Finale" : "Next Round"}
         </button>
       </div>
     </div>
@@ -704,23 +749,19 @@ function ResultsHost({
 }
 
 function PlayerScreen({
-  answerDrafts,
   connectionState,
   hostStatus,
   playerId,
   promptById,
   roomState,
-  onAnswerDraftChange,
   onGoHome,
   onSend
 }: {
-  answerDrafts: Record<string, string>;
   connectionState: ConnectionState;
   hostStatus: string;
   playerId: string;
-  promptById: Map<string, { text: string }>;
+  promptById: Map<string, ActionPrompt>;
   roomState: RoomState | null;
-  onAnswerDraftChange: (value: Record<string, string>) => void;
   onGoHome: () => void;
   onSend: (message: ClientToHostMessage) => void;
 }) {
@@ -753,6 +794,8 @@ function PlayerScreen({
   }
 
   const playerName = getPlayerName(roomState, playerId);
+  const currentRound = getCurrentRound(roomState);
+  const currentPrompt = currentRound ? promptById.get(currentRound.promptId) : undefined;
 
   return (
     <section className="phone-screen">
@@ -767,23 +810,26 @@ function PlayerScreen({
         </div>
       )}
 
-      {roomState.phase === "answering" && (
-        <AnswerPlayer
-          answerDrafts={answerDrafts}
+      {roomState.phase === "acting" && currentRound && currentPrompt && (
+        <ActionPlayer
           playerId={playerId}
-          promptById={promptById}
+          prompt={currentPrompt}
           roomState={roomState}
-          onAnswerDraftChange={onAnswerDraftChange}
+          round={currentRound}
           onSend={onSend}
         />
       )}
 
-      {roomState.phase === "voting" && (
-        <VotePlayer playerId={playerId} promptById={promptById} roomState={roomState} onSend={onSend} />
+      {roomState.phase === "discussion" && currentRound && currentPrompt && (
+        <DiscussionPlayer prompt={currentPrompt} roomState={roomState} />
       )}
 
-      {roomState.phase === "results" && (
-        <PlayerResults playerId={playerId} promptById={promptById} roomState={roomState} />
+      {roomState.phase === "accusing" && currentRound && (
+        <AccusePlayer playerId={playerId} roomState={roomState} round={currentRound} onSend={onSend} />
+      )}
+
+      {roomState.phase === "reveal" && currentRound && currentPrompt && (
+        <PlayerReveal playerId={playerId} prompt={currentPrompt} roomState={roomState} round={currentRound} />
       )}
 
       {roomState.phase === "final" && <FinalScoreboard players={roomState.players} />}
@@ -791,112 +837,97 @@ function PlayerScreen({
   );
 }
 
-function AnswerPlayer({
-  answerDrafts,
+function ActionPlayer({
   playerId,
-  promptById,
+  prompt,
   roomState,
-  onAnswerDraftChange,
+  round,
   onSend
 }: {
-  answerDrafts: Record<string, string>;
   playerId: string;
-  promptById: Map<string, { text: string }>;
+  prompt: ActionPrompt;
   roomState: RoomState;
-  onAnswerDraftChange: (value: Record<string, string>) => void;
+  round: Round;
   onSend: (message: ClientToHostMessage) => void;
 }) {
-  const matchup = getPlayerMatchup(roomState, playerId);
-  const alreadyAnswered = Boolean(matchup?.answers[playerId]);
-  const draft = matchup ? answerDrafts[matchup.id] ?? "" : "";
-
-  if (!matchup) {
-    return (
-      <div className="phone-panel">
-        <p className="panel-kicker">Round {roomState.round}</p>
-        <h1>You're watching this bit.</h1>
-      </div>
-    );
-  }
-
-  const prompt = promptById.get(matchup.promptId)?.text ?? "";
+  const isFaker = round.fakerId === playerId;
+  const alreadyReady = round.readyPlayerIds.includes(playerId);
 
   return (
-    <form
-      className="phone-panel answer-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSend({ type: "submit_answer", matchId: matchup.id, answer: draft });
-      }}
-    >
-      <p className="panel-kicker">Your prompt</p>
-      <h1>{prompt}</h1>
-      {alreadyAnswered ? (
-        <div className="waiting-badge">Answer locked</div>
+    <div className="phone-panel action-panel">
+      <p className="panel-kicker">Round {roomState.round}/{roomState.maxRounds}</p>
+      <span className={`role-badge ${isFaker ? "faker-role" : "real-role"}`}>
+        {isFaker ? "Faker" : categoryLabel(prompt.category)}
+      </span>
+      <h1>{isFaker ? prompt.fakerHint : prompt.text}</h1>
+      {alreadyReady ? (
+        <div className="waiting-badge">Ready locked</div>
       ) : (
-        <>
-          <textarea
-            autoFocus
-            maxLength={90}
-            onChange={(event) =>
-              onAnswerDraftChange({ ...answerDrafts, [matchup.id]: event.target.value })
-            }
-            placeholder="Make the room laugh"
-            value={draft}
-          />
-          <button className="button button-primary" disabled={!draft.trim()} type="submit">
-            Send Answer
-          </button>
-        </>
+        <button
+          className="button button-primary"
+          type="button"
+          onClick={() => onSend({ type: "submit_ready", roundId: round.id })}
+        >
+          Ready
+        </button>
       )}
-    </form>
+    </div>
   );
 }
 
-function VotePlayer({
+function DiscussionPlayer({ prompt, roomState }: { prompt: ActionPrompt; roomState: RoomState }) {
+  return (
+    <div className="phone-panel">
+      <p className="panel-kicker">Round {roomState.round}/{roomState.maxRounds}</p>
+      <span className="role-badge real-role">{categoryLabel(prompt.category)}</span>
+      <h1>{prompt.text}</h1>
+      <div className="waiting-badge">Discuss</div>
+    </div>
+  );
+}
+
+function AccusePlayer({
   playerId,
-  promptById,
   roomState,
+  round,
   onSend
 }: {
   playerId: string;
-  promptById: Map<string, { text: string }>;
   roomState: RoomState;
+  round: Round;
   onSend: (message: ClientToHostMessage) => void;
 }) {
-  const matchup = getCurrentMatchup(roomState);
-  const prompt = matchup ? promptById.get(matchup.promptId)?.text ?? "" : "";
-  const answers = getSubmittedAnswers(matchup);
-  const votedFor = matchup?.votes[playerId];
-  const eligible = matchup ? getEligibleVoterIds(roomState, matchup).includes(playerId) : false;
+  const votedFor = round.votes[playerId];
+  const eligible = getEligibleVoterIds(roomState, round).includes(playerId);
+  const suspects = roomState.players.filter((player) => round.playerIds.includes(player.id));
 
   return (
     <div className="phone-panel">
-      <p className="panel-kicker">Vote</p>
-      <h1>{prompt}</h1>
+      <p className="panel-kicker">Accuse</p>
+      <h1>Who was faking?</h1>
       {!eligible && <div className="waiting-badge">Watch this one</div>}
-      {eligible && votedFor && <div className="waiting-badge">Vote locked</div>}
+      {eligible && votedFor && <div className="waiting-badge">Vote locked: {getPlayerName(roomState, votedFor)}</div>}
       {eligible && !votedFor && (
         <div className="choice-stack">
-          {answers.map((answer) => {
-            const ownAnswer = answer.playerId === playerId;
+          {suspects.map((suspect) => {
+            const self = suspect.id === playerId;
 
             return (
               <button
-                className="answer-choice"
-                disabled={ownAnswer}
-                key={answer.playerId}
+                className="answer-choice suspect-choice"
+                disabled={self}
+                key={suspect.id}
                 onClick={() =>
                   onSend({
                     type: "submit_vote",
-                    matchId: matchup?.id ?? "",
-                    answerPlayerId: answer.playerId
+                    roundId: round.id,
+                    suspectPlayerId: suspect.id
                   })
                 }
                 type="button"
               >
-                <span>{answer.answer}</span>
-                {ownAnswer && <strong>Your answer</strong>}
+                <span>{suspect.name}</span>
+                {self && <strong>You</strong>}
               </button>
             );
           })}
@@ -906,34 +937,35 @@ function VotePlayer({
   );
 }
 
-function PlayerResults({
+function PlayerReveal({
   playerId,
-  promptById,
-  roomState
+  prompt,
+  roomState,
+  round
 }: {
   playerId: string;
-  promptById: Map<string, { text: string }>;
+  prompt: ActionPrompt;
   roomState: RoomState;
+  round: Round;
 }) {
-  const matchup = getCurrentMatchup(roomState);
-  const prompt = matchup ? promptById.get(matchup.promptId)?.text ?? "" : "";
-  const answers = getSubmittedAnswers(matchup);
-  const voteTotals = getVoteTotals(matchup);
+  const outcome = getRoundOutcome(round);
+  const voteTotals = getVoteTotals(round);
+  const currentPlayer = roomState.players.find((player) => player.id === playerId);
 
   return (
     <div className="phone-panel">
-      <p className="panel-kicker">Results</p>
-      <h1>{prompt}</h1>
+      <p className="panel-kicker">{outcome.fakerCaught ? "Caught" : "Escaped"}</p>
+      <h1>{round.fakerId === playerId ? "You were the faker" : `${getPlayerName(roomState, round.fakerId)} was the faker`}</h1>
+      <span className="role-badge real-role">{categoryLabel(prompt.category)}</span>
       <div className="choice-stack">
-        {answers.map((answer) => (
-          <div className={`answer-choice static-choice ${answer.playerId === playerId ? "own-choice" : ""}`} key={answer.playerId}>
-            <span>{answer.answer}</span>
-            <strong>
-              {getPlayerName(roomState, answer.playerId)}: {voteTotals[answer.playerId] ?? 0}
-            </strong>
+        {round.playerIds.map((suspectId) => (
+          <div className={`answer-choice static-choice ${suspectId === round.fakerId ? "own-choice" : ""}`} key={suspectId}>
+            <span>{getPlayerName(roomState, suspectId)}</span>
+            <strong>{voteTotals[suspectId] ?? 0} votes</strong>
           </div>
         ))}
       </div>
+      <div className="waiting-badge">Score: {currentPlayer?.score ?? 0}</div>
     </div>
   );
 }
@@ -944,25 +976,6 @@ function PromptBoard({ eyebrow, prompt }: { eyebrow: string; prompt: string }) {
       <p className="board-label">{eyebrow}</p>
       <h1>{prompt}</h1>
     </section>
-  );
-}
-
-function AnswerShowdown({
-  answers,
-  roomState
-}: {
-  answers: Array<{ playerId: string; answer: string }>;
-  roomState: RoomState;
-}) {
-  return (
-    <div className="answer-grid">
-      {answers.map((answer, index) => (
-        <article className={`answer-card answer-${index + 1}`} key={answer.playerId}>
-          <p>{answer.answer}</p>
-          <strong>{getPlayerName(roomState, answer.playerId)}</strong>
-        </article>
-      ))}
-    </div>
   );
 }
 
@@ -1011,6 +1024,17 @@ function PlayerCloud({ players, compact = false }: { players: RoomState["players
       ))}
     </div>
   );
+}
+
+function categoryLabel(category: ActionPrompt["category"]): string {
+  const labels: Record<ActionPrompt["category"], string> = {
+    pointing: "Pointing",
+    numbers: "Numbers",
+    hands: "Hands",
+    choice: "Choice"
+  };
+
+  return labels[category];
 }
 
 export default App;
